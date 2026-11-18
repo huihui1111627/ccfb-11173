@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTP 仿真同步状态面板</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --line: #2b333d; --text: #d7dde5;
+    --muted: #8b97a5; --accent: #4aa8ff; --gm: #3fb950; --slave: #4aa8ff;
+    --passive: #d29922; --master: #a371f7; --fault: #f85149; --listen: #8b97a5;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",monospace; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; gap:24px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .badge { background:var(--panel); border:1px solid var(--line);
+    padding:3px 10px; border-radius:12px; color:var(--muted); }
+  .badge b { color:var(--text); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:14px; min-width:0; }
+  .panel h2 { font-size:13px; margin:0 0 12px; color:var(--accent);
+    text-transform:uppercase; letter-spacing:.06em; }
+  .full { grid-column:1 / -1; }
+  svg { width:100%; height:300px; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line);
+    white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  .scroll { max-height:280px; overflow:auto; }
+  .pill { padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .Master { background:rgba(163,113,247,.18); color:var(--master); }
+  .Slave { background:rgba(74,168,255,.18); color:var(--slave); }
+  .Passive { background:rgba(210,153,34,.18); color:var(--passive); }
+  .Faulty { background:rgba(248,81,73,.18); color:var(--fault); }
+  .Listening,.PreMaster,.Uncalibrated,.Initializing {
+    background:rgba(139,151,165,.18); color:var(--listen); }
+  .node-label { fill:var(--text); font-size:11px; }
+  .node-gm { stroke:var(--gm); stroke-width:2.5px; }
+  .link { stroke:var(--line); stroke-width:1.5px; }
+  .link-label { fill:var(--muted); font-size:9px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; color:var(--muted); }
+  .legend span::before { content:"●"; margin-right:4px; }
+  canvas { width:100%; height:240px; }
+  .timeline-row.send { color:var(--slave); }
+  .timeline-row.recv { color:var(--gm); }
+  .timeline-row.drop { color:var(--fault); }
+  .timeline-row.corrected { color:var(--passive); }
+  .stat { display:inline-block; margin-right:18px; }
+  .stat b { font-size:18px; color:var(--accent); display:block; }
+  .theory-ok { color:var(--gm); } .theory-bad { color:var(--fault); }
+  .controls { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  select,button { background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:6px; padding:5px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⏱ PTP 精确时间协议仿真面板</h1>
+  <span class="badge">场景 <b id="spec">-</b></span>
+  <span class="badge">种子 <b id="seed">-</b></span>
+  <span class="badge">当前主时钟 <b id="gm">-</b></span>
+  <span class="badge">时长 <b id="dur">-</b> s</span>
+  <div class="controls">
+    <label class="badge">视图
+      <select id="curveSelect">
+        <option value="true">真实偏移</option>
+        <option value="measured">协议测量偏移</option>
+        <option value="freq">伺服频偏 (ppb)</option>
+      </select>
+    </label>
+    <button id="reload">重新加载</button>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="panel">
+    <h2>设备拓扑</h2>
+    <svg id="topo"></svg>
+    <div class="legend">
+      <span style="color:var(--gm)">主时钟 GM</span>
+      <span style="color:var(--master)">Master 端口</span>
+      <span style="color:var(--slave)">Slave 端口</span>
+      <span style="color:var(--passive)">Passive (破环)</span>
+      <span style="color:var(--fault)">断电/Faulty</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>主时钟选举 (BMCA 数据集逐项比较)</h2>
+    <div id="theory"></div>
+    <div class="scroll" style="margin-top:10px">
+      <table id="electionTable">
+        <thead><tr><th>时间(s)</th><th>设备</th><th>决策</th><th>步数</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel full">
+    <h2>各端口状态机</h2>
+    <div class="scroll">
+      <table id="portTable">
+        <thead><tr><th>设备</th><th>端口</th><th>状态</th><th>外部主时钟数</th>
+          <th>对等延迟(ns)</th><th>Sync接收</th><th>Announce接收</th><th>DelayReq发送</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel full">
+    <h2>从端时间偏移收敛曲线</h2>
+    <div id="stats"></div>
+    <canvas id="curve" height="240"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>端口状态迁移</h2>
+    <div class="scroll">
+      <table id="transTable">
+        <thead><tr><th>时间(s)</th><th>设备:端口</th><th>迁移</th><th>原因</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>报文时间线</h2>
+    <div class="scroll">
+      <table id="timelineTable">
+        <thead><tr><th>时间(s)</th><th>事件</th><th>设备:端口</th><th>报文</th>
+          <th>序号</th><th>修正(ns)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
